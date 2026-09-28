@@ -80,3 +80,9 @@ playwright-report/
 # opencode local cache (keep skills/commands, ignore runtime)
 .opencode/node_modules/
 .opencode/package-lock.json
+
+# local agent / AI assistant working files
+.claude/
+.cursor/
+.aider*
+specs/
