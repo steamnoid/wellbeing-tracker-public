@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
+import { getSessionSecret } from "./lib/session-secret.js";
 
 const COOKIE_NAME = "wt_session";
-
-function secret() {
-  return new TextEncoder().encode(process.env.JWT_SECRET || "dev-secret-change-me");
-}
 
 export async function middleware(request: NextRequest) {
   const token = request.cookies.get(COOKIE_NAME)?.value;
   let authenticated = false;
   if (token) {
     try {
-      await jwtVerify(token, secret());
+      await jwtVerify(token, getSessionSecret());
       authenticated = true;
     } catch {
       authenticated = false;
@@ -29,4 +26,5 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: ["/events/:path*", "/api/events/:path*"],
+  runtime: "nodejs",
 };

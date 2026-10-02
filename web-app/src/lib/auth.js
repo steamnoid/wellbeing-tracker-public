@@ -2,16 +2,13 @@ import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 import { getDb } from "./db.js";
+import { getSessionSecret } from "./session-secret.js";
 
 export const COOKIE_NAME = "wt_session";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
 const SESSION_DAYS = 7;
-
-function secret() {
-  return new TextEncoder().encode(process.env.JWT_SECRET || "dev-secret-change-me");
-}
 
 function httpError(status, message) {
   const err = new Error(message);
@@ -65,7 +62,7 @@ export async function createSession(userId, email = "") {
     .setSubject(userId)
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DAYS}d`)
-    .sign(secret());
+    .sign(getSessionSecret());
 }
 
 export async function verifySession(token) {
@@ -75,7 +72,7 @@ export async function verifySession(token) {
 
 export async function verifySessionPayload(token) {
   try {
-    const { payload } = await jwtVerify(token, secret());
+    const { payload } = await jwtVerify(token, getSessionSecret());
     return payload;
   } catch {
     return null;
