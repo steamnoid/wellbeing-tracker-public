@@ -1,0 +1,30 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  the_suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # The native build prerequisites, taken from this repository's own Dockerfile rather
+      # than invented here. `better-sqlite3` is an N-API binding compiled from source, so
+      # `npm ci` needs a toolchain and a python to drive node-gyp; the `Dockerfile` says the
+      # same three packages for the same reason, and this file would otherwise be a second
+      # place where that knowledge lives and could disagree with the first.
+      - name: install the native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            python3 \
+            libsqlite3-dev
+      - run: npm ci
+      - run: npm test
