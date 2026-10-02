@@ -1,0 +1,38 @@
+# The repository's own suite, on every push and every pull request.
+#
+# **This file exists because a delivery could not be merged without it.** The run that delivers
+# here opens a pull request and then asks GitHub whether the suite went green *for the commit it
+# pushed*, and it refuses to merge a commit no suite has looked at. A repository with no workflow
+# has no verdict to read, so the run could open a pull request and then stop — and the record would
+# say the dependencies did not install, which is a lie about this repository.
+#
+# So the suite runs here, and it is the repository's own: `npm ci` and then `npm test`, which is
+# `vitest run`. The same words the plan in `src/tools/run_tests.rs` builds for a Node checkout.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  suite:
+    name: suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The toolchain image this port runs a Node checkout on is `node:22-bookworm`, and a
+          # suite that is green on a different Node than the one it was verified on is a suite
+          # that was verified somewhere else.
+          node-version: 22
+          cache: npm
+
+      # `npm ci` and not `npm install`: the lockfile is the fact, and `npm ci` fails rather than
+      # quietly resolving something the lockfile does not say.
+      - name: install what the suite needs
+        run: npm ci
+
+      - name: the repository's own test suite
+        run: npm test
