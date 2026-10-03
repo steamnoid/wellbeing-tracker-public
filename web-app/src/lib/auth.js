@@ -10,7 +10,11 @@ const MIN_PASSWORD_LENGTH = 8;
 const SESSION_DAYS = 7;
 
 function secret() {
-  return new TextEncoder().encode(process.env.JWT_SECRET || "dev-secret-change-me");
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error("JWT_SECRET is not set");
+  }
+  return new TextEncoder().encode(jwtSecret);
 }
 
 function httpError(status, message) {

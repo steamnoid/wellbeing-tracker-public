@@ -22,6 +22,7 @@ import { resolve } from "node:path";
 const ROOT = resolve(import.meta.dirname, "../..");
 const IMAGE_TAG = "qa-wellbeingt-17-test";
 const CONTAINER_NAME = `qa-wt17-${Date.now()}`;
+const TEST_JWT_SECRET = process.env.JWT_SECRET ?? "test-only-jwt-secret";
 
 function run(cmd: string, opts: { timeout?: number; cwd?: string } = {}): string {
   return execSync(cmd, {
@@ -51,7 +52,7 @@ describe.skipIf(!hasDocker)("QA: WELLBEINGT-17 Dockerization — integration", (
     if (!hasDocker) return;
     try {
       // Build the image
-      run(`docker build -t ${IMAGE_TAG} .`, { timeout: 300_000 });
+      run(`docker build --build-arg JWT_SECRET=${TEST_JWT_SECRET} -t ${IMAGE_TAG} .`, { timeout: 300_000 });
       imageBuilt = true;
       // Start the container (port mapping may not forward on all hosts;
       // runtime checks go through `docker exec`)
