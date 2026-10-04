@@ -4,15 +4,20 @@ import { jwtVerify } from "jose";
 const COOKIE_NAME = "wt_session";
 
 function secret() {
-  return new TextEncoder().encode(process.env.JWT_SECRET || "dev-secret-change-me");
+  const value = process.env.JWT_SECRET;
+  if (!value) {
+    throw new Error("JWT_SECRET is required");
+  }
+  return new TextEncoder().encode(value);
 }
 
 export async function middleware(request: NextRequest) {
   const token = request.cookies.get(COOKIE_NAME)?.value;
   let authenticated = false;
   if (token) {
+    const key = secret();
     try {
-      await jwtVerify(token, secret());
+      await jwtVerify(token, key);
       authenticated = true;
     } catch {
       authenticated = false;
