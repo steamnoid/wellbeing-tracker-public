@@ -5,6 +5,10 @@
 # better-sqlite3 native module (N-API native binding built from source).
 FROM node:22-bookworm AS build
 
+ARG JWT_SECRET
+RUN test -n "$JWT_SECRET" || (echo "ERROR: JWT_SECRET build argument is required" && exit 1)
+ENV JWT_SECRET=$JWT_SECRET
+
 WORKDIR /app
 
 # Native module build prerequisites (better-sqlite3).
@@ -32,6 +36,9 @@ RUN npm run build
 
 ########## RUNTIME STAGE ##########
 FROM node:22-bookworm-slim AS runtime
+
+ARG JWT_SECRET
+ENV JWT_SECRET=$JWT_SECRET
 
 WORKDIR /app
 

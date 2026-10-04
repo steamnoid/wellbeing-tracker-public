@@ -10,7 +10,11 @@ const MIN_PASSWORD_LENGTH = 8;
 const SESSION_DAYS = 7;
 
 function secret() {
-  return new TextEncoder().encode(process.env.JWT_SECRET || "dev-secret-change-me");
+  const value = process.env.JWT_SECRET;
+  if (!value) {
+    throw new Error("JWT_SECRET is required");
+  }
+  return new TextEncoder().encode(value);
 }
 
 function httpError(status, message) {
@@ -74,8 +78,9 @@ export async function verifySession(token) {
 }
 
 export async function verifySessionPayload(token) {
+  const key = secret();
   try {
-    const { payload } = await jwtVerify(token, secret());
+    const { payload } = await jwtVerify(token, key);
     return payload;
   } catch {
     return null;
