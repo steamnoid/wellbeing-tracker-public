@@ -1,122 +1,168 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
-import Database from "better-sqlite3";
-import { DATA_DB } from "./infra/env";
 
-export const TEST_PASSWORD = "password123";
+/** Mirrors the cookie and header names used by web-app/lib/csrf.ts. */
+export const CSRF_COOKIE_NAME = "csrf_token";
+export const CSRF_HEADER_NAME = "x-csrf-token";
 
-export function uniqueEmail(tag: string): string {
-  return `qa-${tag}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}@e2e.test`;
+export type Credentials = { email: string; password: string };
+
+export type ApiResult = { status: number; body: Record<string, unknown> };
+
+let accountCounter = 0;
+
+export function uniqueEmail(prefix = "shopper"): string {
+  accountCounter += 1;
+  return `${prefix}.${Date.now()}.${accountCounter}@example.com`;
 }
 
-export async function apiRegister(request: APIRequestContext, email: string, password = TEST_PASSWORD): Promise<void> {
-  const res = await request.post("/api/auth/register", { data: { email, password } });
-  if (!res.ok()) throw new Error(`register failed (${res.status()}): ${await res.text()}`);
+export function credentialsFor(overrides: Partial<Credentials> = {}): Credentials {
+  return {
+    email: overrides.email ?? uniqueEmail(),
+    password: overrides.password ?? "correct-horse-battery-staple",
+  };
 }
 
-export async function apiLogout(request: APIRequestContext): Promise<void> {
-  const res = await request.post("/api/auth/logout");
-  if (!res.ok()) throw new Error(`logout failed (${res.status()}): ${await res.text()}`);
+/**
+ * Fetches a CSRF token. The matching `csrf_token` cookie is kept in the request
+ * context jar, so later requests from the same context can send both halves.
+ */
+export async function fetchCsrfToken(request: APIRequestContext): Promise<string> {
+  const response = await request.get("/api/auth/csrf", { failOnStatusCode: false });
+  expect(response.status(), "GET /api/auth/csrf should return 200").toBe(200);
+
+  const payload = (await response.json()) as { csrfToken?: string };
+  expect(payload.csrfToken, "GET /api/auth/csrf should return a token").toBeTruthy();
+
+  return payload.csrfToken as string;
 }
 
-export async function apiCreateEvent(request: APIRequestContext, rawText: string): Promise<void> {
-  const res = await request.post("/api/events", { data: { text: rawText } });
-  if (!res.ok()) throw new Error(`event create failed (${res.status()}): ${await res.text()}`);
+export async function readCsrfCookie(request: APIRequestContext): Promise<string | undefined> {
+  const state = await request.storageState();
+  return state.cookies.find((cookie) => cookie.name === CSRF_COOKIE_NAME)?.value;
 }
 
-type EventRow = { id: string; raw_text: string };
-
-function unwrapEvents(body: unknown): EventRow[] {
-  if (Array.isArray(body)) return body as EventRow[];
-  if (body && typeof body === "object") {
-    for (const key of ["events", "items", "data"]) {
-      const value = (body as Record<string, unknown>)[key];
-      if (Array.isArray(value)) return value as EventRow[];
-    }
+export async function postJson(
+  request: APIRequestContext,
+  path: string,
+  body: unknown,
+  options: { csrfToken?: string | null } = {},
+): Promise<ApiResult> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (options.csrfToken) {
+    headers[CSRF_HEADER_NAME] = options.csrfToken;
   }
-  throw new Error(`unexpected GET /api/events response shape: ${JSON.stringify(body).slice(0, 200)}`);
+
+  const response = await request.post(path, { headers, data: body, failOnStatusCode: false });
+  const parsed = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+
+  return { status: response.status(), body: parsed };
 }
 
-export async function apiListEvents(request: APIRequestContext): Promise<EventRow[]> {
-  const res = await request.get("/api/events");
-  if (!res.ok()) throw new Error(`list events failed (${res.status()}): ${await res.text()}`);
-  return unwrapEvents(await res.json());
+/** Creates an account and returns the credentials that are now able to sign in. */
+export async function registerUser(
+  request: APIRequestContext,
+  credentials: Credentials = credentialsFor(),
+): Promise<Credentials> {
+  const csrfToken = await fetchCsrfToken(request);
+  const { status, body } = await postJson(request, "/api/auth/register", credentials, { csrfToken });
+
+  expect(
+    status,
+    `registering ${credentials.email} should return 201 (body: ${JSON.stringify(body)})`,
+  ).toBe(201);
+
+  return credentials;
 }
 
-export async function findOwnEventId(request: APIRequestContext, rawText: string): Promise<string> {
-  const matches = (await apiListEvents(request)).filter((e) => e.raw_text === rawText);
-  if (matches.length !== 1) throw new Error(`expected exactly one event "${rawText}", found ${matches.length}`);
-  return matches[0].id;
+export async function signInWithApi(
+  request: APIRequestContext,
+  credentials: Credentials,
+): Promise<ApiResult> {
+  const csrfToken = await fetchCsrfToken(request);
+  return postJson(request, "/api/auth/login", credentials, { csrfToken });
 }
 
-export function setEventTimestamp(eventId: string, isoUtc: string): void {
-  const db = new Database(DATA_DB);
-  try {
-    db.prepare("UPDATE events SET created_at = ? WHERE id = ?").run(isoUtc, eventId);
-  } finally {
-    db.close();
-  }
+export async function loginUser(
+  request: APIRequestContext,
+  credentials: Credentials,
+): Promise<void> {
+  const result = await signInWithApi(request, credentials);
+  expect(
+    result.status,
+    `signing in ${credentials.email} should return 200 (body: ${JSON.stringify(result.body)})`,
+  ).toBe(200);
 }
 
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
+export async function registerAndLogin(
+  request: APIRequestContext,
+  credentials: Credentials = credentialsFor(),
+): Promise<Credentials> {
+  await registerUser(request, credentials);
+  await loginUser(request, credentials);
+  return credentials;
 }
 
-export function localDayKey(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+export async function openLoginPage(page: Page): Promise<void> {
+  await page.goto("/login");
+  // The submit button stays disabled until the page has fetched a CSRF token.
+  await expect(page.getByTestId("login-submit")).toBeEnabled();
 }
 
-export function addDays(base: Date, days: number): Date {
-  const d = new Date(base);
-  d.setDate(d.getDate() + days);
-  return d;
+export async function fillLoginForm(page: Page, credentials: Credentials): Promise<void> {
+  await page.getByTestId("login-email").fill(credentials.email);
+  await page.getByTestId("login-password").fill(credentials.password);
 }
 
-export function localNoonIso(dayOffset: number): string {
-  const d = addDays(new Date(), dayOffset);
-  d.setHours(12, 0, 0, 0);
-  return d.toISOString();
+/** Submits the login form and returns the status of the resulting API response. */
+export async function submitLoginForm(page: Page, credentials: Credentials): Promise<number> {
+  await fillLoginForm(page, credentials);
+
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (candidate) =>
+        candidate.url().endsWith("/api/auth/login") && candidate.request().method() === "POST",
+    ),
+    page.getByTestId("login-submit").click(),
+  ]);
+
+  return response.status();
 }
 
-export function openTimeline(page: Page): Promise<unknown> {
-  return page.goto("/");
+export async function signInThroughUi(page: Page, credentials: Credentials): Promise<void> {
+  await openLoginPage(page);
+  const status = await submitLoginForm(page, credentials);
+  expect(status, "signing in through the form should succeed").toBe(200);
+  await expect(page.getByTestId("login-status")).toHaveText(/signed in/i);
 }
 
-export async function waitTimelineLoaded(page: Page): Promise<void> {
-  await expect(page.getByTestId("timeline-event").first()).toBeVisible();
+export async function openRegisterPage(page: Page): Promise<void> {
+  await page.goto("/register");
+  await expect(page.getByTestId("register-submit")).toBeEnabled();
 }
 
-export function eventCard(page: Page, snippet: string) {
-  return page.getByTestId("timeline-event").filter({ hasText: snippet });
+export async function fillRegisterForm(page: Page, credentials: Credentials): Promise<void> {
+  await page.getByTestId("register-email").fill(credentials.email);
+  await page.getByTestId("register-password").fill(credentials.password);
 }
 
-export async function timelineTexts(page: Page): Promise<string[]> {
-  await page.getByTestId("timeline-event").first().waitFor();
-  return page.getByTestId("timeline-event").allTextContents();
+/** Submits the registration form and returns the status of the API response. */
+export async function submitRegisterForm(page: Page, credentials: Credentials): Promise<number> {
+  await fillRegisterForm(page, credentials);
+
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (candidate) =>
+        candidate.url().endsWith("/api/auth/register") && candidate.request().method() === "POST",
+    ),
+    page.getByTestId("register-submit").click(),
+  ]);
+
+  return response.status();
 }
 
-export function confirmDialog(page: Page) {
-  return page.getByTestId("delete-confirm-dialog");
-}
-
-export function trackDeleteRequests(page: Page): () => number {
-  let count = 0;
-  page.on("request", (req) => {
-    if (req.method() === "DELETE" && new URL(req.url()).pathname.startsWith("/api/events/")) count += 1;
-  });
-  return () => count;
-}
-
-export async function loginViaForm(page: Page, email: string, password = TEST_PASSWORD): Promise<void> {
-  await page.locator('input[type="email"]').fill(email);
-  await page.locator('input[type="password"]').fill(password);
-  const submit = page.locator('button[type="submit"]').first();
-  await submit.click();
-}
-
-export async function deleteViaUi(page: Page, snippet: string): Promise<void> {
-  await eventCard(page, snippet).getByTestId("event-delete").click();
-  const dialog = confirmDialog(page);
-  await expect(dialog).toBeVisible();
-  await dialog.getByTestId("delete-confirm").click();
-  await expect(dialog).toHaveCount(0);
+export async function signUpThroughUi(page: Page, credentials: Credentials): Promise<void> {
+  await openRegisterPage(page);
+  const status = await submitRegisterForm(page, credentials);
+  expect(status, "creating an account through the form should succeed").toBe(201);
+  await expect(page.getByTestId("register-status")).toHaveText(/account created/i);
 }
